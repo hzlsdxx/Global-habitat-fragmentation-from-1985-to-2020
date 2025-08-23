@@ -1,12 +1,12 @@
-# Landscape Fragmentation Analysis Pipeline
+# Habitat Fragmentation Analysis Pipeline
 
-A comprehensive Python-based framework for analyzing landscape fragmentation patterns, environmental drivers, and protected area effectiveness using advanced geospatial and statistical methods.
+A comprehensive Python-based framework for analyzing habitat fragmentation patterns, environmental drivers, and protected area effectiveness using advanced geospatial and statistical methods.
 
 ## Overview
 
-This pipeline provides end-to-end analysis capabilities for understanding landscape fragmentation impacts on biodiversity through three integrated analytical components:
+This pipeline provides end-to-end analysis capabilities for understanding habitat fragmentation impacts on biodiversity through three integrated analytical components:
 
-1. **Fragmentation Analysis** - Calculate landscape indices and species-specific fragmentation metrics
+1. **Fragmentation Analysis** - Calculate habitat indices and species-specific fragmentation metrics
 2. **GLM Analysis** - Identify environmental and anthropogenic drivers of fragmentation change  
 3. **PSM Analysis** - Evaluate protected area effectiveness using propensity score matching
 
@@ -25,7 +25,7 @@ This pipeline provides end-to-end analysis capabilities for understanding landsc
 │   └── psm_protected_areas_analysis.py
 ├── data/
 │   ├── species_analysis/
-│   ├── landscape_indices/
+│   ├── habitat_indices/
 │   ├── glm_analysis/
 │   ├── psm_analysis/
 │   └── boundaries/
@@ -70,14 +70,14 @@ data/
 
 ## 1. Fragmentation Analysis
 
-Calculate landscape fragmentation indices and aggregate species-level metrics.
+Calculate habitat fragmentation indices and aggregate species-level metrics.
 
 ### Scripts Overview
 
 #### `species_landscape_indices.py`
-- **Purpose**: Calculate landscape indices (PD, ED, AREA_MN, MESH) for individual species
+- **Purpose**: Calculate habitat indices (PD, ED, AREA_MN, MESH) for individual species
 - **Input**: Species distribution data, DEM, land cover
-- **Output**: Species-specific landscape index rasters
+- **Output**: Species-specific habitat index rasters
 - **Key Features**: Parallel processing, habitat filtering, altitude constraints
 
 #### `fragmentation_indices_calculator.py`  
@@ -114,7 +114,7 @@ python fragmentation/species_richness_calculator.py
 ```
 
 ### Key Parameters
-- **Window size**: 3000m (3km resolution for landscape indices)
+- **Window size**: 3000m (3km resolution for habitat indices)
 - **Pixel size**: 300m (input land cover resolution)
 - **Parallel workers**: Configurable (default: CPU cores - 1)
 
@@ -128,7 +128,7 @@ python fragmentation/species_richness_calculator.py
 
 ## 2. GLM Analysis
 
-Identify environmental and anthropogenic drivers of landscape fragmentation change using Generalized Linear Models.
+Identify environmental and anthropogenic drivers of habitat fragmentation change using Generalized Linear Models.
 
 ### Scripts Overview
 
