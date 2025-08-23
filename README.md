@@ -14,15 +14,15 @@ This pipeline provides end-to-end analysis capabilities for understanding habita
 
 ```
 ├── fragmentation/
-│   ├── species_landscape_indices.py
+│   ├── species_habitat_indices.py
 │   ├── fragmentation_indices_calculator.py
 │   ├── global_mix_aggregator.py
 │   └── species_richness_calculator.py
 ├── glm/
-│   ├── glm_fragmentation_analysis.py
-│   └── psm_data_preprocessor.py
+│   └── glm_fragmentation_analysis.py
 ├── psm/
-│   └── psm_protected_areas_analysis.py
+│   ├── psm_protected_areas_analysis.py
+│   └── psm_data_preprocessor.py
 ├── data/
 │   ├── species_analysis/
 │   ├── habitat_indices/
