@@ -61,7 +61,6 @@ data/
 │   └── dem_2024.tif
 ├── boundaries/
 │   ├── countries_boundaries.shp
-│   └── study_area_boundaries.shp
 └── protected_areas/
     └── protected_areas_1985_2020_processed.tif
 ```
