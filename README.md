@@ -156,7 +156,7 @@ python glm/glm_fragmentation_analysis.py
 ### Input Variables
 - **Response**: Species fragmentation change (1985-2020)
 - **Predictors**: 
-  - Fire frequency
+  - Burned area
   - Drought frequency
   - Temperature change
   - Precipitation change
@@ -222,94 +222,81 @@ python psm/psm_protected_areas_analysis.py
 - `protected_areas_att_spatial.tif` - Spatial ATT distribution
 - `psm_analysis_summary.txt` - Comprehensive results
 
- **Output**: Stacked visualization showing increase, decrease, and unchanged ratios
+## 4. Visualization Analysis
+
+Create comprehensive multi-species habitat fragmentation comparison visualizations and statistical analysis.
+
+### Scripts Overview
+
+#### `multi_species_visualization_suite.py`
+- **Purpose**: Generate stacked bar chart visualizations for habitat fragmentation changes across multiple species
+- **Input**: Species-specific CSV files with fragmentation change data
+- **Output**: Horizontal stacked bar charts and statistical summaries
+- **Key Features**: Multi-species comparison, statistical validation, customizable sampling
+
+### Core Functions
+
+#### `create_multi_species_habitat_fragmentation_stacked()`
+- **Purpose**: Create horizontal stacked bar charts comparing habitat fragmentation changes across species
+- **Input**: CSV files with `Species_ID`, `Increase_Ratio`, `Decrease_Ratio`, `Unchanged_Ratio` columns
+- **Output**: Horizontal stacked bar visualization showing fragmentation patterns
 - **Key Features**:
-  - Horizontal stacked bar chart format
   - Color-coded categories (Red: Increase, Blue: Decrease, Orange: Unchanged)
+  - Reversed species order for optimal readability
   - Statistical validation and data cleaning
-  - SVG output format for high-quality publication
-
-#### `create_simple_legend()`
-- **Purpose**: Generate standalone color legend for fragmentation charts
-- **Output**: Publication-ready legend with color coding
-- **Features**: Clean, professional styling with customizable layout
-
-#### `analyze_fragmentation_patterns()`
-- **Purpose**: Comprehensive statistical analysis of fragmentation patterns
-- **Input**: Multi-species CSV data
-- **Output**: Statistical summaries, cross-species comparisons
-- **Features**:
-  - Mean, standard deviation, and median calculations
-  - Species-wise and cross-species statistical comparisons
-  - Sample size reporting and validation
-
-#### `main_fragmentation_visualization()`
-- **Purpose**: Execute complete visualization pipeline
-- **Features**: 
-  - Automated folder structure creation
-  - Comprehensive output generation
-  - Error handling and logging
-  - Statistical summary file generation
+  - Professional styling with publication-ready output
+  - SVG format for high-quality scientific graphics
 
 ### Usage Example
 ```bash
-# Run complete visualization analysis
-python visualization/visualization_analysis_suite.py
+# Run habitat fragmentation stacked analysis
+python visualization/fragmentation_stacked_analysis.py
 ```
 
-### Advanced Usage
+### Advanced Configuration
 ```python
-# Custom species analysis
+# Example species data dictionary
 species_csv_files = {
     "AMPH": "data/analysis_results/tables/AMPH_changes.csv",
-    "BIRD": "data/analysis_results/tables/BIRD_changes.csv", 
-    "MAMM": "data/analysis_results/tables/MAMM_changes.csv",
-    "REPT": "data/analysis_results/tables/REPT_changes.csv"
+    "BIRD": "data/analysis_results/tables/BIRD_changes.csv",
+    "MAMM": "data/analysis_results/tables/MA_changes.csv",
+    "REPT": "data/analysis_results/tables/RE_changes.csv"
 }
 
 # Execute with custom parameters
-all_species_data, analysis_results = main_fragmentation_visualization(
+create_multi_species_habitat_fragmentation_stacked(
     species_csv_files,
-    output_folder="data/visualization_results",
+    output_path="data/visualization_results/multi_species_fragmentation.svg",
     sample_size=10000  # Optional sampling for large datasets
 )
 ```
 
 ### Input Data Requirements
-Each species CSV file must contain the following columns:
-- `Species_ID`: Unique identifier for each species record
-- `Increase_Ratio`: Proportion of habitat showing increased fragmentation
-- `Decrease_Ratio`: Proportion of habitat showing decreased fragmentation  
-- `Unchanged_Ratio`: Proportion of habitat showing no fragmentation change
+- CSV files with required columns: `Species_ID`, `Increase_Ratio`, `Decrease_Ratio`, `Unchanged_Ratio`
+- Ratio values should be numeric and represent proportions (typically between 0 and 1)
+- Species identifier consistency across datasets
+- Proper null value handling and data validation
 
-### Key Parameters
-- **Sample size**: Configurable random sampling for large datasets (default: all data)
-- **Color scheme**: 
-  - Red (#E74C3C): Increase ratio
-  - Blue (#3498DB): Decrease ratio
-  - Orange (#faac61): Unchanged ratio
-- **Output format**: SVG for high-quality, scalable graphics
-- **Chart orientation**: Horizontal stacked bars for better species name readability
-
-### Output Files
-- `multi_species_habitat_fragmentation_stacked.svg` - Main comparative visualization
-- `fragmentation_legend.svg` - Standalone color legend
-- `fragmentation_analysis_summary.txt` - Comprehensive statistical summary
-- Console output with detailed processing information and statistics
+### Key Features
+- **Multi-species comparison**: Simultaneous visualization of fragmentation patterns across taxonomic groups
+- **Publication quality**: SVG output format for high-resolution scientific graphics
+- **Statistical validation**: Comprehensive data cleaning and quality control processes
+- **Professional styling**: Clean layout with Arial font and scientific color schemes
+- **Flexible sampling**: Configurable random sampling for large datasets
+- **Cross-species analysis**: Statistical comparisons and summary calculations
 
 ### Statistical Analysis Features
 - **Data validation**: Automatic null value detection and removal
-- **Sample size reporting**: Tracks data availability per species
-- **Cross-species comparison**: Statistical summaries across all analyzed species
+- **Sample size reporting**: Tracks data availability and processing statistics per species
+- **Cross-species comparison**: Mean, standard deviation calculations across all species
 - **Quality control**: Validates required fields and data completeness
-- **Error handling**: Graceful failure handling with informative error messages
+- **Comprehensive reporting**: Detailed console output with processing information
 
-### Visualization Features
-- **Publication-ready quality**: High-resolution SVG output
-- **Professional styling**: Clean, scientific visualization aesthetics
-- **Customizable layout**: Adjustable figure sizes and spacing
-- **Statistical annotations**: Comprehensive statistical reporting
-- **Memory efficient**: Optimized for large dataset processing
+### Output Files
+- `multi_species_habitat_fragmentation_stacked.svg` - Main horizontal stacked bar chart
+- Console output with detailed statistical summaries for each species
+- Cross-species comparison statistics (means, standard deviations)
+- Processing information and data quality reports
 
 ## Performance Optimization
 
