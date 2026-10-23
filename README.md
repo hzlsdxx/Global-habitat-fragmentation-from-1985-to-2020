@@ -1,13 +1,13 @@
 # Habitat Fragmentation Analysis Pipeline
 
-A comprehensive Python-based framework for analyzing habitat fragmentation patterns, environmental drivers, and protected area effectiveness using advanced geospatial and statistical methods.
+A Python and R framework for analyzing habitat fragmentation patterns, environmental drivers, and protected area effectiveness using geospatial and statistical methods. The driver analysis uses an R spatial-block Gaussian generalized linear mixed model (GLMM).
 
 ## Overview
 
 This pipeline provides end-to-end analysis capabilities for understanding habitat fragmentation impacts on biodiversity through four integrated analytical components:
 
 1. **Fragmentation Analysis** - Calculate habitat indices and species-specific fragmentation metrics
-2. **GLM Analysis** - Identify environmental and anthropogenic drivers of fragmentation change  
+2. **GLMM Analysis (R)** - Estimate associations between fragmentation change and environmental and anthropogenic drivers with spatial-block random intercepts
 3. **PSM Analysis** - Evaluate protected area effectiveness using propensity score matching
 4. **Visualization Analysis** - Create comprehensive multi-species comparison visualizations
 
@@ -20,7 +20,7 @@ This pipeline provides end-to-end analysis capabilities for understanding habita
 │   ├── global_mix_aggregator.py
 │   └── species_richness_calculator.py
 ├── glm/
-│   └── glm_fragmentation_analysis.py
+│   └── glmm_fragmentation_analysis.R
 ├── psm/
 │   ├── psm_protected_areas_analysis.py
 │   └── psm_data_preprocessor.py
@@ -39,13 +39,22 @@ This pipeline provides end-to-end analysis capabilities for understanding habita
 ## Requirements
 
 ### Dependencies
+
+Install the dependencies for the Python components:
+
 ```bash
-pip install rasterio numpy pandas geopandas scikit-learn statsmodels matplotlib seaborn
-pip install multiprocessing functools datetime warnings tempfile shutil scipy
+pip install -r requirements.txt
+```
+
+Install the R dependencies for the GLMM analysis in an R session:
+
+```r
+install.packages(c("terra", "glmmTMB"))
 ```
 
 ### System Requirements
 - Python 3.8+
+- R 4.1+ for the GLMM analysis
 - Multi-core CPU (recommended: 16+ cores for parallel processing)
 - RAM: 16GB+ (depends on dataset size)
 - Storage: Sufficient space for intermediate and output files
@@ -135,45 +144,50 @@ python fragmentation/species_richness_calculator.py
 - `{species_id}_MIX.tif` - Composite fragmentation index
 - Global aggregation and species richness rasters
 
-## 2. GLM Analysis
+## 2. GLMM Analysis (R)
 
-Identify environmental and anthropogenic drivers of habitat fragmentation change using Generalized Linear Models.
+Estimate associations between composite habitat fragmentation change and six environmental and anthropogenic predictors using `glmmTMB`. The R script `glm/glmm_fragmentation_analysis.R` replaces the former Python GLM script. The `glm/` directory name is retained.
 
-### Scripts Overview
+### Inputs and Configuration
 
-#### `glm_fragmentation_analysis.py`
-- **Purpose**: Analyze drivers of fragmentation change using GLM
-- **Input**: Fragmentation change data, environmental predictors
-- **Output**: Statistical models, coefficient plots, significance tests
-- **Key Features**: Variable standardization, spatial masking, comprehensive diagnostics
+Run from the repository root. Configure `x_paths`, `y_configs`, and `region_configs` at the top of the script to match your data. The default raster paths are:
+
+| Variable | File under `data/glm_analysis/` |
+| --- | --- |
+| Response: composite fragmentation change (1985–2020) | `ALL_composite_diff_all.tif` |
+| Fire frequency | `fire_frequency.tif` |
+| Drought frequency | `drought_frequency.tif` |
+| Temperature change | `global_temperature_trends.tif` |
+| Precipitation change | `global_precipitation_trends.tif` |
+| Population change | `population_difference_3km.tif` |
+| Nighttime light change | `nightlight_change.tif` |
+
+The default regions are AF, AU, China, EU, NA, RUS, SA, SEA, and Global. Their boundary files under `data/boundaries/` are `AF_final.shp`, `AU.shp`, `China.shp`, `EU_final.shp`, `NA_final2.shp`, `RUS.shp`, `SA.shp`, `SEA.shp`, and `countries_boundaries.shp`, respectively. Include the associated shapefile files, such as `.shx`, `.dbf`, and `.prj`.
+
+All predictor rasters must share a CRS and grid. The response raster must use the same CRS as the predictors; within each region it is cropped, bilinearly resampled to the predictor grid, and masked. Boundary vectors are reprojected to the predictor CRS when needed. Supply the input datasets locally before running the analysis.
 
 ### Usage Example
+
 ```bash
-# Run GLM analysis
-python glm/glm_fragmentation_analysis.py
+Rscript glm/glmm_fragmentation_analysis.R
 ```
 
-### Input Variables
-- **Response**: Species fragmentation change (1985-2020)
-- **Predictors**: 
-  - Burned area
-  - Drought frequency
-  - Temperature change
-  - Precipitation change
-  - Population change  
-  - Nighttime light change
+The default output directory is `D:/hzl/code/outputs/GLMM_ALL_COMPOSITE`. Change the `folder` field in `y_configs` to use another location.
 
-### Key Features
-- Gaussian GLM with standardized variables
-- 95% confidence intervals
-- Significance testing (p ≤ 0.1)
-- Coefficient visualization
-- Comprehensive model diagnostics
+### Model and Processing
+
+- The model uses a Gaussian family with an identity link, six fixed-effect predictors, and a random intercept for each 5° × 5° longitude/latitude block: `fragmentation ~ fire_freq + drought_freq + temp_change + precip_change + pop_change + light_change + (1 | block_id)`.
+- Each region is cropped and masked separately. Rows with missing values are removed. If more than `MAX_OBS = 1000000` complete observations remain, the script samples up to that limit using seed 42.
+- Blocks containing fewer than `MIN_BLOCK_N = 5` observations are removed **after sampling**. Regions with fewer than 30 remaining observations or fewer than 3 blocks are skipped.
+- The response and all six predictors are standardized within each retained regional sample using R's `scale()` (sample standard deviation).
+- Projected pixel coordinates are converted to longitude/latitude for block assignment. The blocks are angular cells, not equal-area units. `BLOCK_DEG` controls their size.
+- Fixed-effect results include two-sided Wald z-test p-values and approximate 95% Wald confidence intervals (`estimate ± 1.96 × standard error`). The intercept is excluded from the reported coefficient table.
+
+The block random intercept represents variation shared by observations in the same block. It does not guarantee removal of residual spatial autocorrelation. The script reports data coverage and sample counts to the console; it does not perform a complete convergence or residual diagnostic assessment.
 
 ### Output Files
-- Statistical model summary
-- Coefficient statistics table
-- Visualization plots (optional SVG export)
+
+`GLMM_ALL_COMPOSITE_results.txt` contains each successfully fitted region's six predictor coefficients, standard errors, p-values, confidence intervals, observation count, and block count. One TXT file is written per response configuration. The GLMM script generates no plots and saves no fitted model objects.
 
 ## 3. PSM Analysis  
 
@@ -301,10 +315,12 @@ create_multi_species_habitat_fragmentation_stacked(
 ## Performance Optimization
 
 ### Parallel Processing
-All scripts support multi-core processing:
+Parallel processing is available in the Python components that expose worker settings:
 - **Default**: CPU cores - 1
 - **Configurable**: Set `MAX_WORKERS` or `N_CORES` parameters
 - **Memory management**: Batch processing for large datasets
+
+The GLMM script processes regions sequentially and does not configure parallel workers. Reduce `MAX_OBS` to shorten model fitting when needed; the full regional raster data frame is created before sampling, so this setting does not cap preprocessing memory use.
 
 ### Memory Efficiency
 - Temporary file usage for large raster operations
@@ -328,7 +344,7 @@ All scripts support multi-core processing:
 
 ### Statistical Validation
 - Balance testing for PSM
-- Model diagnostics for GLM
+- GLMM data-coverage and sample-count reporting; convergence and residual diagnostics require separate assessment
 - Significance testing throughout
 - Confidence interval estimation
 - Cross-species statistical comparisons
