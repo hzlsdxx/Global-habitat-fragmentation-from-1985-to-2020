@@ -4,9 +4,9 @@ A Python and R framework for analyzing habitat fragmentation patterns, environme
 
 ## Overview
 
-This pipeline provides end-to-end analysis capabilities for understanding habitat fragmentation impacts on biodiversity through four integrated analytical components:
+This repository provides four analytical components for studying habitat fragmentation and biodiversity. The six-metric calculation starts from prepared species habitat rasters; the current composite response used by the GLMM must be supplied separately.
 
-1. **Fragmentation Analysis** - Calculate habitat indices and species-specific fragmentation metrics
+1. **Fragmentation Analysis** - Binarize prepared species habitat rasters and calculate six habitat metrics
 2. **GLMM Analysis (R)** - Estimate associations between fragmentation change and environmental and anthropogenic drivers with spatial-block random intercepts
 3. **PSM Analysis** - Evaluate protected area effectiveness using propensity score matching
 4. **Visualization Analysis** - Create comprehensive multi-species comparison visualizations
@@ -27,6 +27,9 @@ This pipeline provides end-to-end analysis capabilities for understanding habita
 ├── visualization/
 │   └── visualization_analysis_suite.py
 ├── data/
+│   ├── sp_data.gdb
+│   ├── species_habitat/
+│   ├── land_cover/
 │   ├── species_analysis/
 │   ├── habitat_indices/
 │   ├── glm_analysis/
@@ -64,6 +67,12 @@ install.packages(c("terra", "glmmTMB"))
 ### Input Data Structure
 ```
 data/
+├── sp_data.gdb
+├── species_habitat/
+│   ├── AMPH_1985_kc/
+│   │   └── {species_id}_landcover.tif
+│   ├── AMPH_2020_kc/
+│   └── ... # BIRD, MA and RE folders for 1985 and 2020
 ├── species_analysis/
 │   ├── species_distribution_data.gdb
 │   └── species_fragmentation_change_1985_2020.tif
@@ -88,61 +97,78 @@ data/
 
 ## 1. Fragmentation Analysis
 
-Calculate habitat fragmentation indices and aggregate species-level metrics.
+Calculate six habitat metrics from prepared species-specific habitat rasters. The earlier four-metric composite and aggregation scripts remain available as a legacy workflow.
 
 ### Scripts Overview
 
-#### `species_landscape_indices.py`
-- **Purpose**: Calculate habitat indices (PD, ED, AREA_MN, MESH) for individual species
-- **Input**: Species distribution data, DEM, land cover
-- **Output**: Species-specific habitat index rasters
-- **Key Features**: Parallel processing, habitat filtering, altitude constraints
+#### `species_habitat_indices.py`
+- **Purpose**: Calculate CLUMPY, nLSI, ED, MESH, AREA_MN and PD for individual species, using the local six-metric implementation.
+- **Input**: Prepared `{species_id}_landcover.tif` rasters and a species geodatabase with the configured layers and an `id_no` field.
+- **Output**: Six metric GeoTIFFs per species, grouped by animal group and year, plus JSON progress records.
+- **Processing**: In-memory habitat binarization, parallel species processing and resumable batches for 1985 and 2020.
 
-#### `fragmentation_indices_calculator.py`  
-- **Purpose**: Create normalized composite fragmentation indices per species
-- **Input**: Individual species landscape index files
-- **Output**: Standardized MIX (composite) indices
-- **Key Features**: Global normalization, batch processing
+### Habitat Inputs and Binarization
 
-#### `global_mix_aggregator.py`
-- **Purpose**: Aggregate all species into global-scale fragmentation maps
-- **Input**: Species-specific MIX files  
-- **Output**: Global mean fragmentation raster (3km resolution)
-- **Key Features**: Memory-efficient processing, 3km grid standardization
+Before running this script, prepare species habitat rasters that have already been filtered by species range, elevation limits and suitable land-cover classes. The replacement script does **not** perform these filters or create the input habitat rasters; that preprocessing workflow is not included in this update. Supplying unfiltered land cover would treat every non-NoData class as habitat.
 
-#### `species_richness_calculator.py`
-- **Purpose**: Calculate species richness from individual species distributions
-- **Input**: Species-specific MIX files
-- **Output**: Species count raster showing biodiversity patterns
-- **Key Features**: Binary aggregation, parallel batch processing
+The default inputs are:
+
+- `data/sp_data.gdb`: species layers configured in `TASKS`, with species identifiers in `id_no`.
+- `data/species_habitat/{GROUP}_{YEAR}_kc/{species_id}_landcover.tif`: prepared habitat rasters, where `GROUP` is `AMPH`, `BIRD`, `MA` or `RE` and `YEAR` is `1985` or `2020`.
+- `data/land_cover/land_cover_{YEAR}_300m.tif`: optional reference for the NoData value when a species raster does not define one. If neither raster supplies it, the fallback is `0`.
+
+The script merges all non-NoData habitat classes into value `1` in memory and retains the NoData value as background. Thus adjacent suitable land-cover classes belong to the same habitat patch. No separate binary TIFF is written. The effective NoData value must be finite and different from `1`; input rasters must use a projected grid with 300 m pixels.
+
+Configure `GDB_FILE`, `BASE_LC_DIR`, `LC_REF`, `TASKS`, `BASE_OUT_DIR` and `N_WORKERS` at the top of the script for your data. Bird tasks `BIRD_A`–`BIRD_D` share `BIRD` input/output folders; reptile tasks `RE_A` and `RE_B` share `RE` folders.
 
 ### Usage Example
 ```bash
-# Step 1: Calculate individual species indices
-python fragmentation/species_landscape_indices.py
+# Run all configured tasks for both years, from the repository root
+python fragmentation/species_habitat_indices.py
 
-# Step 2: Create normalized composite indices  
-python fragmentation/fragmentation_indices_calculator.py
-
-# Step 3: Aggregate to global scale
-python fragmentation/global_mix_aggregator.py
-
-# Step 4: Calculate species richness
-python fragmentation/species_richness_calculator.py
+# Run one task for one year
+python fragmentation/species_habitat_indices.py AMPH 2020
 ```
 
+Command syntax is `python fragmentation/species_habitat_indices.py [TASK] [YEAR]`. Task choices are `AMPH`, `BIRD_A`, `BIRD_B`, `BIRD_C`, `BIRD_D`, `MA`, `RE_A` and `RE_B`; year choices are `1985` and `2020`. Omitting the year runs both years for the selected task; omitting both arguments runs every configured task.
+
 ### Key Parameters
-- **Window size**: 3000m (3km resolution for habitat indices)
-- **Pixel size**: 300m (input land cover resolution)
-- **Parallel workers**: Configurable (default: CPU cores - 1)
+- **Window size**: Non-overlapping 10 × 10 pixel windows (3 km × 3 km), starting at each input raster's upper-left corner. Partial windows at the raster edges use their actual cell counts, but their output cells remain 3 km wide and may extend beyond the source bounds. This stage does not align rasters to a common global 3 km grid origin or reproject them.
+- **Pixel size**: 300 m; each cell covers 9 ha. Density and effective mesh-size denominators use the whole window area, including background cells.
+- **Connectivity**: Eight-neighbour connectivity for habitat patches; horizontal and vertical shared edges for CLUMPY, nLSI and ED. ED counts internal habitat/background edges and excludes the outside boundary of the window.
+- **Parallel workers**: Configurable with `N_WORKERS` (default: 16).
+- **Undefined values**: No-habitat windows and undefined metrics use output NoData `-9999`. CLUMPY and nLSI are undefined for a fully occupied 10 × 10 window in the retained implementation. Finite nLSI values, including those from partial edge windows, are clipped to `[0, 1]`.
+
+This update retains the formulas in the local `wz_all_metrics.py`. The habitat binarization, window-area denominators and edge treatment differ from the earlier repository implementation, so the four previously named metrics are not guaranteed to retain their earlier values.
 
 ### Output Files
-- `{species_id}_PD.tif` - Patch density
-- `{species_id}_ED.tif` - Edge density  
-- `{species_id}_AREA_MN.tif` - Mean patch area
-- `{species_id}_MESH.tif` - Effective mesh size
-- `{species_id}_MIX.tif` - Composite fragmentation index
-- Global aggregation and species richness rasters
+
+The default output directory is `D:/hzl/code/outputs/six_habitat_indices/{GROUP}_{YEAR}`. Change `BASE_OUT_DIR` to select another location.
+
+| File | Metric | Units |
+| --- | --- | --- |
+| `{species_id}_CLUMPY.tif` | Clumpiness | Dimensionless |
+| `{species_id}_nLSI.tif` | Normalized landscape shape index | Dimensionless |
+| `{species_id}_ED.tif` | Edge density | m/ha |
+| `{species_id}_MESH.tif` | Effective mesh size | ha |
+| `{species_id}_AREA_MN.tif` | Mean habitat-patch area | ha |
+| `{species_id}_PD.tif` | Patch density | Patches per 100 ha |
+
+Progress is recorded in `progress_{TASK}_{YEAR}.json`. The six-metric script does not write a composite MIX raster, group means or temporal differences.
+
+### Legacy Composite and Aggregation Scripts
+
+These retained scripts use the earlier composite workflow and their own path settings:
+
+| Script | Retained behavior |
+| --- | --- |
+| `fragmentation_indices_calculator.py` | Normalizes ED, PD, AREA_MN and MESH using configured bounds, reverses AREA_MN and MESH, and averages available normalized values into `{species_id}_MIX.tif`. Its bounds must be reviewed before applying it to newly calculated metrics. |
+| `global_mix_aggregator.py` | Aligns species MIX rasters to a reference 3 km grid and averages valid values. It does not calculate a 1985–2020 difference. |
+| `species_richness_calculator.py` | Counts valid species MIX coverage on a reference grid. Its presence/coverage binarization is separate from the habitat binarization used before calculating the six metrics. |
+
+The current local composite analysis instead selects **CLUMPY, nLSI, ED and PD** from the six outputs. It uses shared species-level global min/max values, reverses normalized CLUMPY, combines the selected metrics within each animal group, and averages across available groups. AREA_MN and MESH remain standalone outputs in that analysis. The composite change is **2020 minus 1985**; positive values represent increased fragmentation.
+
+The updated aggregation/composite scripts that generate `ALL_composite_diff_all.tif` are not published in this repository. Prepare this response separately and place it in `data/glm_analysis/` (or configure another path in the R script) before running the GLMM. The legacy scripts above are not a complete generation workflow for that response.
 
 ## 2. GLMM Analysis (R)
 
