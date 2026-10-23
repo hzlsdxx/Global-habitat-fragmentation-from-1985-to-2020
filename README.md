@@ -4,7 +4,7 @@ A Python and R framework for analyzing habitat fragmentation patterns, environme
 
 ## Overview
 
-This repository provides four analytical components for studying habitat fragmentation and biodiversity. The six-metric calculation starts from prepared species habitat rasters; the current composite response used by the GLMM must be supplied separately.
+This repository provides four analytical components for studying habitat fragmentation and biodiversity. The six-metric calculation starts from prepared species habitat rasters; the GLMM uses a separately prepared composite-change raster as its response.
 
 1. **Fragmentation Analysis** - Binarize prepared species habitat rasters and calculate six habitat metrics
 2. **GLMM Analysis (R)** - Estimate associations between fragmentation change and environmental and anthropogenic drivers with spatial-block random intercepts
@@ -97,19 +97,19 @@ data/
 
 ## 1. Fragmentation Analysis
 
-Calculate six habitat metrics from prepared species-specific habitat rasters. The earlier four-metric composite and aggregation scripts remain available as a legacy workflow.
+Calculate six habitat metrics from prepared species-specific habitat rasters, construct composite indices, and aggregate species-level results.
 
 ### Scripts Overview
 
 #### `species_habitat_indices.py`
-- **Purpose**: Calculate CLUMPY, nLSI, ED, MESH, AREA_MN and PD for individual species, using the local six-metric implementation.
+- **Purpose**: Calculate CLUMPY, nLSI, ED, MESH, AREA_MN and PD for individual species.
 - **Input**: Prepared `{species_id}_landcover.tif` rasters and a species geodatabase with the configured layers and an `id_no` field.
 - **Output**: Six metric GeoTIFFs per species, grouped by animal group and year, plus JSON progress records.
 - **Processing**: In-memory habitat binarization, parallel species processing and resumable batches for 1985 and 2020.
 
 ### Habitat Inputs and Binarization
 
-Before running this script, prepare species habitat rasters that have already been filtered by species range, elevation limits and suitable land-cover classes. The replacement script does **not** perform these filters or create the input habitat rasters; that preprocessing workflow is not included in this update. Supplying unfiltered land cover would treat every non-NoData class as habitat.
+The script takes species habitat rasters that have been filtered by species range, elevation limits and suitable land-cover classes. Complete this preprocessing before running the metric calculation. Every non-NoData class in the input is treated as habitat.
 
 The default inputs are:
 
@@ -137,9 +137,7 @@ Command syntax is `python fragmentation/species_habitat_indices.py [TASK] [YEAR]
 - **Pixel size**: 300 m; each cell covers 9 ha. Density and effective mesh-size denominators use the whole window area, including background cells.
 - **Connectivity**: Eight-neighbour connectivity for habitat patches; horizontal and vertical shared edges for CLUMPY, nLSI and ED. ED counts internal habitat/background edges and excludes the outside boundary of the window.
 - **Parallel workers**: Configurable with `N_WORKERS` (default: 16).
-- **Undefined values**: No-habitat windows and undefined metrics use output NoData `-9999`. CLUMPY and nLSI are undefined for a fully occupied 10 × 10 window in the retained implementation. Finite nLSI values, including those from partial edge windows, are clipped to `[0, 1]`.
-
-This update retains the formulas in the local `wz_all_metrics.py`. The habitat binarization, window-area denominators and edge treatment differ from the earlier repository implementation, so the four previously named metrics are not guaranteed to retain their earlier values.
+- **Undefined values**: No-habitat windows and undefined metrics use output NoData `-9999`. CLUMPY and nLSI are undefined for a fully occupied 10 × 10 window. Finite nLSI values, including those from partial edge windows, are clipped to `[0, 1]`.
 
 ### Output Files
 
@@ -156,23 +154,25 @@ The default output directory is `D:/hzl/code/outputs/six_habitat_indices/{GROUP}
 
 Progress is recorded in `progress_{TASK}_{YEAR}.json`. The six-metric script does not write a composite MIX raster, group means or temporal differences.
 
-### Legacy Composite and Aggregation Scripts
+### Composite and Aggregation Scripts
 
-These retained scripts use the earlier composite workflow and their own path settings:
+These scripts construct species-level MIX indices, aggregate global maps and count species coverage. Configure the paths and normalization bounds in each script for the input data.
 
-| Script | Retained behavior |
+| Script | Purpose |
 | --- | --- |
-| `fragmentation_indices_calculator.py` | Normalizes ED, PD, AREA_MN and MESH using configured bounds, reverses AREA_MN and MESH, and averages available normalized values into `{species_id}_MIX.tif`. Its bounds must be reviewed before applying it to newly calculated metrics. |
+| `fragmentation_indices_calculator.py` | Normalizes ED, PD, AREA_MN and MESH using configured bounds, reverses AREA_MN and MESH, and averages available normalized values into `{species_id}_MIX.tif`. |
 | `global_mix_aggregator.py` | Aligns species MIX rasters to a reference 3 km grid and averages valid values. It does not calculate a 1985–2020 difference. |
 | `species_richness_calculator.py` | Counts valid species MIX coverage on a reference grid. Its presence/coverage binarization is separate from the habitat binarization used before calculating the six metrics. |
 
-The current local composite analysis instead selects **CLUMPY, nLSI, ED and PD** from the six outputs. It uses shared species-level global min/max values, reverses normalized CLUMPY, combines the selected metrics within each animal group, and averages across available groups. AREA_MN and MESH remain standalone outputs in that analysis. The composite change is **2020 minus 1985**; positive values represent increased fragmentation.
+### Composite Response for the GLMM
 
-The updated aggregation/composite scripts that generate `ALL_composite_diff_all.tif` are not published in this repository. Prepare this response separately and place it in `data/glm_analysis/` (or configure another path in the R script) before running the GLMM. The legacy scripts above are not a complete generation workflow for that response.
+The GLMM response is a separately prepared composite-change raster based on **CLUMPY, nLSI, ED and PD**. Its calculation uses shared species-level global min/max values, reverses normalized CLUMPY, combines the selected metrics within each animal group, and averages across available groups. AREA_MN and MESH are standalone outputs. The composite change is **2020 minus 1985**; positive values represent increased fragmentation.
+
+Provide `ALL_composite_diff_all.tif` in `data/glm_analysis/`, or configure another response path in the R script. The MIX calculator described above uses ED, PD, AREA_MN and MESH and does not generate this GLMM response.
 
 ## 2. GLMM Analysis (R)
 
-Estimate associations between composite habitat fragmentation change and six environmental and anthropogenic predictors using `glmmTMB`. The R script `glm/glmm_fragmentation_analysis.R` replaces the former Python GLM script. The `glm/` directory name is retained.
+Estimate associations between composite habitat fragmentation change and six environmental and anthropogenic predictors. The R script `glm/glmm_fragmentation_analysis.R` fits a spatial-block Gaussian generalized linear mixed model using `glmmTMB`.
 
 ### Inputs and Configuration
 
