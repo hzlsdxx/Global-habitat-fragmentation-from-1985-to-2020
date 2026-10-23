@@ -156,19 +156,44 @@ Progress is recorded in `progress_{TASK}_{YEAR}.json`. The six-metric script doe
 
 ### Composite and Aggregation Scripts
 
-These scripts construct species-level MIX indices, aggregate global maps and count species coverage. Configure the paths and normalization bounds in each script for the input data.
+These scripts construct species-level MIX indices, aggregate global maps and count species coverage. Configure their input directories for the analysis.
 
 | Script | Purpose |
 | --- | --- |
-| `fragmentation_indices_calculator.py` | Normalizes ED, PD, AREA_MN and MESH using configured bounds, reverses AREA_MN and MESH, and averages available normalized values into `{species_id}_MIX.tif`. |
+| `fragmentation_indices_calculator.py` | Normalizes CLUMPY, nLSI, ED and PD using shared global min/max, reverses CLUMPY, and averages the four values into `{species_id}_MIX.tif` where all four are valid. |
 | `global_mix_aggregator.py` | Aligns species MIX rasters to a reference 3 km grid and averages valid values. It does not calculate a 1985–2020 difference. |
 | `species_richness_calculator.py` | Counts valid species MIX coverage on a reference grid. Its presence/coverage binarization is separate from the habitat binarization used before calculating the six metrics. |
 
+### Species-Level Composite Index (MIX)
+
+MIX combines **CLUMPY, nLSI, ED and PD** with equal weights. AREA_MN and MESH are standalone metrics. For each metric, `min_metric` and `max_metric` are computed from all finite, non-NoData values in its input rasters. The same pair is used for every species, animal group and year under the input root. Include both 1985 and 2020 in a single run when comparing years; running them separately would calculate different normalization ranges.
+
+Input values are rounded to four decimal places and clipped to their metric's `[min_metric, max_metric]` range before normalization:
+
+```text
+scaled_metric = (metric - min_metric) / (max_metric - min_metric)
+MIX = ((1 - scaled_CLUMPY) + scaled_nLSI + scaled_ED + scaled_PD) / 4
+```
+
+The min/max symbols represent values calculated from the input data; no fixed empirical extrema are required. Only CLUMPY is reversed, so larger MIX indicates greater fragmentation. A pixel is valid only when all four components are finite and valid; otherwise its output is NoData `-9999`. Valid zeros are preserved. An empty or constant normalization range (`max_metric <= min_metric`) produces an error.
+
+```bash
+# Read all groups and years under the six-metric output directory
+python fragmentation/fragmentation_indices_calculator.py
+
+# Select input/output roots while preserving the group/year subdirectories
+python fragmentation/fragmentation_indices_calculator.py --input-dir D:/hzl/code/outputs/six_habitat_indices --output-dir D:/hzl/code/outputs/species_mix --workers 4
+```
+
+By default, the script reads `D:/hzl/code/outputs/six_habitat_indices` recursively and writes `{species_id}_MIX.tif` beside each species/year's input rasters. `--output-dir` selects a separate output root. The four inputs in each set must share dimensions, transform and CRS. Missing or duplicate metric files are reported as errors. Each species/year set is processed independently; cross-year species pairing and temporal differences are separate analysis steps.
+
+Configure `global_mix_aggregator.py` and `species_richness_calculator.py` for one animal-group/year directory at a time. MIX coverage requires all four metrics to be defined, so its coverage count can exclude windows where habitat is present but CLUMPY or nLSI is undefined.
+
 ### Composite Response for the GLMM
 
-The GLMM response is a separately prepared composite-change raster based on **CLUMPY, nLSI, ED and PD**. Its calculation uses shared species-level global min/max values, reverses normalized CLUMPY, combines the selected metrics within each animal group, and averages across available groups. AREA_MN and MESH are standalone outputs. The composite change is **2020 minus 1985**; positive values represent increased fragmentation.
+The GLMM response is a separately prepared composite-change raster based on **CLUMPY, nLSI, ED and PD**. Its calculation first averages each metric across species within each animal group, then normalizes using shared species-level global min/max, reverses CLUMPY, combines the four metrics and averages across available groups. The composite change is **2020 minus 1985**; positive values represent increased fragmentation.
 
-Provide `ALL_composite_diff_all.tif` in `data/glm_analysis/`, or configure another response path in the R script. The MIX calculator described above uses ED, PD, AREA_MN and MESH and does not generate this GLMM response.
+Provide `ALL_composite_diff_all.tif` in `data/glm_analysis/`, or configure another response path in the R script. The species-level MIX calculator writes individual composite rasters; generating this GLMM response requires the separate aggregation and temporal-difference steps. Averaging metrics before composition and averaging species MIX afterwards can give different results when valid-data masks or clipping differ.
 
 ## 2. GLMM Analysis (R)
 
