@@ -1,483 +1,350 @@
+"""Calculate six habitat metrics from prepared species land-cover rasters.
+
+Inputs must already be restricted to species ranges, elevation limits and suitable
+land-cover classes. This script does not repeat that preprocessing. Supply
+single-band, north-up, 300 m square-cell rasters in a projected CRS with metre
+units. All retained classes become habitat (1) in memory; the input NoData value
+represents background, which is included in the window area denominator. No
+separate binary raster is written. This script does not reproject input data.
+
+The formulas follow the local wz_all_metrics.py workflow. Non-overlapping 10 x 10
+windows start at each input's upper-left corner, without global 3 km alignment.
+Partial edge windows use their actual cell count but retain a 3 km output cell.
+Undefined metrics, including CLUMPY and nLSI for a fully occupied 10 x 10 window,
+are written as -9999, preserving the local calculation.
+
+Run all tasks and years, or select a task and optionally a year:
+    python fragmentation/species_habitat_indices.py
+    python fragmentation/species_habitat_indices.py AMPH 2020
+"""
+
+import argparse
 import os
+import json
+import multiprocessing
+from datetime import datetime
+from pathlib import Path
+
 import rasterio
 import numpy as np
 import geopandas as gpd
-import pandas as pd
-from rasterio.mask import mask
-from rasterio.warp import reproject, Resampling
-from skimage.measure import label, regionprops
-from datetime import datetime
-from multiprocessing import Pool, cpu_count
-import functools
+from affine import Affine
+from scipy import ndimage
 
-# -------------------------------
-# File path settings (modify according to your actual situation)
-# -------------------------------
-dem_path = "data/dem2024_clip.tif"
-gdb_file = "data/sp_data.gdb"  # GDB database file
-layer_name = "AMPHIBIANS_population_trend_final_2025_05_02"  # Layer name
-landcover_path = "data/land_cover_1985_300m.tif"
-output_folder = "data/landscape_indices/AMPH_1985"  # Output results folder
+N_WORKERS = 16
+PIXEL_SIZE = 300
+PIXEL_AREA_HA = PIXEL_SIZE * PIXEL_SIZE / 10000  # 9 ha
+STRUCT8 = np.ones((3, 3), dtype=int)
+WINDOW_SIZE = 3000
+FILL = -9999.0
+YEARS = ["1985", "2020"]
+METRICS = ["CLUMPY", "nLSI", "ED", "MESH", "AREA_MN", "PD"]
 
-# Parallel processing settings
-MAX_WORKERS = 16  # Use CPU cores - 1, leave one core for the system
-# MAX_WORKERS = 4  # Can also set manually, e.g., use only 4 cores
+# Resolve inputs relative to this repository, regardless of the working directory.
+# Edit these settings for another data installation; outputs default to drive D.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GDB_FILE = REPO_ROOT / "data" / "sp_data.gdb"
+BASE_LC_DIR = REPO_ROOT / "data" / "species_habitat"
+BASE_OUT_DIR = Path("D:/hzl/code/outputs/six_habitat_indices")
+LC_REF = {
+    year: REPO_ROOT / "data" / "land_cover" / f"land_cover_{year}_300m.tif"
+    for year in YEARS
+}
 
-# Ensure output folder exists
-os.makedirs(output_folder, exist_ok=True)
+# (task ID, GDB layer, input folders by year, output group prefix).
+# Split bird/reptile layers share their group's folders.
+TASKS = [
+    ("AMPH", "AMPHIBIANS_population_trend_final_2025_05_02",
+     {year: BASE_LC_DIR / f"AMPH_{year}_kc" for year in YEARS}, "AMPH"),
+    ("BIRD_A", "Birds_population_trend_final_2025_03_27A_2000",
+     {year: BASE_LC_DIR / f"BIRD_{year}_kc" for year in YEARS}, "BIRD"),
+    ("BIRD_B", "Birds_population_trend_final_2025_03_27B_4000",
+     {year: BASE_LC_DIR / f"BIRD_{year}_kc" for year in YEARS}, "BIRD"),
+    ("BIRD_C", "Birds_population_trend_final_2025_03_27C_6000",
+     {year: BASE_LC_DIR / f"BIRD_{year}_kc" for year in YEARS}, "BIRD"),
+    ("BIRD_D", "Birds_population_trend_final_2025_03_27D_8000",
+     {year: BASE_LC_DIR / f"BIRD_{year}_kc" for year in YEARS}, "BIRD"),
+    ("MA", "MAMMALS_population_trend_final_2025_03_23",
+     {year: BASE_LC_DIR / f"MA_{year}_kc" for year in YEARS}, "MA"),
+    ("RE_A", "REPTILES_population_trend_final_2025_03_23_A",
+     {year: BASE_LC_DIR / f"RE_{year}_kc" for year in YEARS}, "RE"),
+    ("RE_B", "REPTILES_population_trend_final_2025_03_23_B",
+     {year: BASE_LC_DIR / f"RE_{year}_kc" for year in YEARS}, "RE"),
+]
 
 
-# -------------------------------
-# File checking functions
-# -------------------------------
-def check_output_files_exist(feature_id, output_folder):
-    """Check if all output files for a feature exist and are complete"""
-    required_files = [
-        f"{feature_id}_landcover.tif",
-        f"{feature_id}_PD.tif",
-        f"{feature_id}_ED.tif",
-        f"{feature_id}_AREA_MN.tif",
-        f"{feature_id}_MESH.tif"
-    ]
-
-    for filename in required_files:
-        filepath = os.path.join(output_folder, filename)
-        if not os.path.exists(filepath):
-            return False
-
-        # Additional check if file is empty or corrupted
+def load_progress(path):
+    """Load restart information; output files are checked independently."""
+    if os.path.exists(path):
         try:
-            if os.path.getsize(filepath) == 0:
-                return False
-        except OSError:
-            return False
-
-    return True
-
-
-def clean_incomplete_files(feature_id, output_folder):
-    """Clean up incomplete output files"""
-    files_to_clean = [
-        f"{feature_id}_landcover.tif",
-        f"{feature_id}_PD.tif",
-        f"{feature_id}_ED.tif",
-        f"{feature_id}_AREA_MN.tif",
-        f"{feature_id}_MESH.tif"
-    ]
-
-    for filename in files_to_clean:
-        filepath = os.path.join(output_folder, filename)
-        if os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-                print(f"Deleted incomplete file: {filename}")
-            except Exception as e:
-                print(f"Error deleting file {filename}: {e}")
+            with open(path, "r", encoding="utf-8") as stream:
+                progress = json.load(stream)
+            progress["completed"] = [str(fid) for fid in progress["completed"]]
+            progress["failed"] = [str(fid) for fid in progress["failed"]]
+            return progress
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"Could not load progress from {path}: {exc}")
+    return {"completed": [], "failed": [], "last_update": None}
 
 
-def get_processing_statistics(gdf, output_folder):
-    """Get processing statistics"""
-    total_features = len(gdf)
-    completed_count = 0
-    pending_features = []
-
-    for idx, row in gdf.iterrows():
-        feature_id = row['id_no']
-        if check_output_files_exist(feature_id, output_folder):
-            completed_count += 1
-        else:
-            pending_features.append((idx, feature_id))
-
-    return {
-        'total': total_features,
-        'completed': completed_count,
-        'pending': len(pending_features),
-        'pending_features': pending_features
-    }
+def save_progress(path, progress):
+    progress["last_update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(path, "w", encoding="utf-8") as stream:
+        json.dump(progress, stream, indent=2, ensure_ascii=False)
 
 
-# -------------------------------
-# Define functions for calculating indices
-# -------------------------------
-def calculate_indices_in_window(data, pixel_size, no_data_value):
-    data_copy = data.copy()
-    data_copy2 = data_copy
-    data_copy[data_copy == no_data_value] = 0  # Set no_data pixels to 0
-    labeled_image, num_patches = label(data_copy, return_num=True)
-    regions = regionprops(labeled_image)
-    patch_areas = [region.area * (pixel_size ** 2) for region in regions]
+def _validate_nodata(nodata):
+    """Reject sentinels incompatible with the equality-based binary habitat mask."""
+    if nodata is None or not np.isscalar(nodata) or not np.isfinite(nodata):
+        raise ValueError("NoData must be a finite numeric value, not NaN or infinity.")
+    if nodata == 1:
+        raise ValueError("NoData=1 conflicts with binary habitat=1; use another sentinel.")
 
-    def calculate_total_edge_length(data_arr, nodata_value, count_boundary=True):
-        """Calculate total edge length in landscape, not considering resolution."""
-        if count_boundary:
-            # Use padding method as in PyLandStats
-            padded_arr = np.pad(
-                data_arr,
-                pad_width=1,
-                mode="constant",
-                constant_values=nodata_value
-            )
 
-            # Calculate all horizontal edge differences
-            horizontal_edges = np.sum(padded_arr[1:, :] != padded_arr[:-1, :])
-            # Calculate all vertical edge differences
-            vertical_edges = np.sum(padded_arr[:, 1:] != padded_arr[:, :-1])
+# Habitat patch areas in hectares, using eight-neighbour connectivity.
+def _patch_areas_ha(data, nodata):
+    habitat = (data != nodata)
+    labeled, n = ndimage.label(habitat, structure=STRUCT8)
+    if n == 0:
+        return np.array([], dtype=np.float64)
+    sizes = ndimage.sum(habitat, labeled, range(1, n + 1))
+    return np.asarray(sizes, dtype=np.float64) * PIXEL_AREA_HA
 
-            return horizontal_edges + vertical_edges
 
-        else:
-            # Don't calculate boundary - create adjacency matrix like PyLandStats
-            classes = np.unique(data_arr)
-            classes = classes[classes != nodata_value]
-
-            # Create adjacency matrix
-            adjacency_matrix = np.zeros((len(classes), len(classes)), dtype=np.int32)
-
-            # Create mapping from class value to index
-            class_to_idx = {class_val: idx for idx, class_val in enumerate(classes)}
-
-            # Calculate horizontal adjacency
-            for i in range(data_arr.shape[0]):
-                for j in range(data_arr.shape[1] - 1):
-                    val1 = data_arr[i, j]
-                    val2 = data_arr[i, j + 1]
-                    if (val1 != nodata_value and val2 != nodata_value and val1 != val2):
-                        idx1 = class_to_idx[val1]
-                        idx2 = class_to_idx[val2]
-                        adjacency_matrix[idx1, idx2] += 1
-                        adjacency_matrix[idx2, idx1] += 1  # Add symmetrically
-
-            # Calculate vertical adjacency
-            for i in range(data_arr.shape[0] - 1):
-                for j in range(data_arr.shape[1]):
-                    val1 = data_arr[i, j]
-                    val2 = data_arr[i + 1, j]
-                    if (val1 != nodata_value and val2 != nodata_value and val1 != val2):
-                        idx1 = class_to_idx[val1]
-                        idx2 = class_to_idx[val2]
-                        adjacency_matrix[idx1, idx2] += 1
-                        adjacency_matrix[idx2, idx1] += 1  # Add symmetrically
-
-            # Get upper triangular matrix (avoid double counting)
-            upper_triangle = np.triu(adjacency_matrix)
-
-            # Set diagonal elements to 0 (no edges within same class)
-            np.fill_diagonal(upper_triangle, 0)
-
-            # Total edge length is sum of upper triangle elements
-            return np.sum(upper_triangle)
-
-    valid_mask = (data_copy != 0)  # Assume 0 is nodata value
-
-    # Calculate valid landscape area
-    valid_pixels = np.sum(valid_mask)
-    total_area = valid_pixels * (pixel_size ** 2)
-
-    total_edge_length = calculate_total_edge_length(data_copy2, 0) * pixel_size
-
-    PD = (num_patches / total_area) * 1e6 if total_area > 0 else 0
-    ED = (total_edge_length / total_area) * 1e4 if total_area > 0 else 0
-    AREA_MN = (np.mean(patch_areas) / 1e4) if patch_areas else 0
-    if total_area == 0 or len(patch_areas) == 0:
-        MESH = 0
+# -------------------------------------------------------
+# -------------------------------------------------------
+def _same_adj_and_mine(data, nodata):
+    n_1 = int(np.sum(data != nodata))
+    a_h, b_h = data[:, :-1], data[:, 1:]
+    a_v, b_v = data[:-1, :], data[1:, :]
+    same_h = int(np.sum((a_h != nodata) & (b_h != nodata)))
+    same_v = int(np.sum((a_v != nodata) & (b_v != nodata)))
+    G_11 = 2 * (same_h + same_v)
+    m = int(np.floor(np.sqrt(n_1)))
+    if n_1 == m * m:
+        min_e = 4 * m
+    elif n_1 <= m * (m + 1):
+        min_e = 4 * m + 2
     else:
-        sum_a = sum((int(area)) ** 2 for area in patch_areas)
-        MESH = (sum_a / total_area) * (1 / 1e4)
-    return PD, ED, AREA_MN, MESH
+        min_e = 4 * (m + 1)
+    return G_11, min_e, n_1
 
 
-def create_indices_raster(image_path, output_paths, window_size=3000, pixel_size=300, lc_nodata=0):
-    with rasterio.open(image_path) as src:
-        raster = src.read(1)
-        rows, cols = raster.shape
-        num_rows = int(window_size / pixel_size)
-        num_cols = int(window_size / pixel_size)
+# -------------------------------------------------------
+# -------------------------------------------------------
+def calc_all(data, nodata):
+    result = {m: np.nan for m in METRICS}
+    n_1 = int(np.sum(data != nodata))
+    if n_1 == 0:
+        return result
 
-        # Calculate output image size (downsampled to 3km resolution)
-        out_rows = (rows + num_rows - 1) // num_rows
-        out_cols = (cols + num_cols - 1) // num_cols
+    n_total  = data.size
+    p_i      = n_1 / n_total
+    total_ha = n_total * PIXEL_AREA_HA
 
-        # Set nodata value for landscape indices raster (choose an impossible negative value)
-        indices_nodata = -9999.0
-
-        # Initialize rasters with nodata value, not 0
-        PD_raster = np.full((out_rows, out_cols), indices_nodata, dtype=np.float32)
-        ED_raster = np.full((out_rows, out_cols), indices_nodata, dtype=np.float32)
-        AREA_MN_raster = np.full((out_rows, out_cols), indices_nodata, dtype=np.float32)
-        MESH_raster = np.full((out_rows, out_cols), indices_nodata, dtype=np.float32)
-
-        for i in range(0, rows, num_rows):
-            for j in range(0, cols, num_cols):
-                window = raster[i:i + num_rows, j:j + num_cols]
-                if window.size == 0:
-                    continue
-
-                # Calculate output position (position after downsampling)
-                out_i = i // num_rows
-                out_j = j // num_cols
-
-                # Check if window has enough valid data (non-nodata values)
-                valid_pixels = np.sum(window != lc_nodata)
-                if valid_pixels > 0:  # Only calculate indices on windows with valid data
-                    PD, ED, AREA_MN, MESH = calculate_indices_in_window(window, pixel_size, lc_nodata)
-                    PD_raster[out_i, out_j] = PD
-                    ED_raster[out_i, out_j] = ED
-                    AREA_MN_raster[out_i, out_j] = AREA_MN
-                    MESH_raster[out_i, out_j] = MESH
-                # If no valid data, keep nodata value
-
-        # Update profile to reflect new resolution (3km×3km) and set nodata value
-        from affine import Affine
-        profile = src.profile
-        profile.update(
-            dtype=rasterio.float32,
-            width=out_cols,
-            height=out_rows,
-            transform=src.transform * Affine.scale(num_cols, num_rows),
-            compress='lzw',
-            tiled=True,
-            blockxsize=512,
-            blockysize=512,
-            nodata=indices_nodata  # Explicitly set nodata value
-        )
-
-        # Save output files
-        with rasterio.open(output_paths[0], 'w', **profile) as dst:
-            dst.write(PD_raster, 1)
-        with rasterio.open(output_paths[1], 'w', **profile) as dst:
-            dst.write(ED_raster, 1)
-        with rasterio.open(output_paths[2], 'w', **profile) as dst:
-            dst.write(AREA_MN_raster, 1)
-        with rasterio.open(output_paths[3], 'w', **profile) as dst:
-            dst.write(MESH_raster, 1)
-
-
-# -------------------------------
-# Single feature processing function (for parallel processing)
-# -------------------------------
-def process_single_feature(args):
-    """Function to process a single feature"""
-    row_dict, idx, total_features, dem_path, landcover_path, output_folder, dem_nodata, lc_nodata = args
-
-    feature_id = row_dict['id_no']
-
-    # Check if output files already exist and are complete
-    if check_output_files_exist(feature_id, output_folder):
-        print(f"[Process {os.getpid()}] Skipping completed feature {idx} (id_no={feature_id}) - files already exist")
-        return True, feature_id, "Files already exist"
-
-    print(f"[Process {os.getpid()}] Starting to process feature {idx} (id_no={feature_id})")
-
-    try:
-        # Reconstruct geometry object
-        from shapely.geometry import shape
-        geom = [shape(row_dict['geometry'])]
-
-        # Clip DEM
-        with rasterio.open(dem_path) as src:
-            clipped_dem, dem_transform = mask(src, geom, crop=True)
-            clipped_dem = clipped_dem[0]  # Assume DEM is single band
-            dem_meta_clipped = src.meta.copy()
-            dem_meta_clipped.update({
-                "height": clipped_dem.shape[0],
-                "width": clipped_dem.shape[1],
-                "transform": dem_transform
-            })
-
-        # Clip land cover
-        with rasterio.open(landcover_path) as src:
-            clipped_lc, lc_transform = mask(src, geom, crop=True)
-            clipped_lc = clipped_lc[0]  # Assume land cover data is single band
-            lc_meta_clipped = src.meta.copy()
-            lc_meta_clipped.update({
-                "height": clipped_lc.shape[0],
-                "width": clipped_lc.shape[1],
-                "transform": lc_transform
-            })
-
-        # Step 1: Filter clipped DEM based on attribute altitude range
-        altitude_l = row_dict.get('altitude_low')
-        altitude_u = row_dict.get('altitude_upper')
-        if pd.isnull(altitude_l) or pd.isnull(altitude_u):
-            dem_modified = clipped_dem.copy()
+    # ---------- CLUMPY ----------
+    G_11, min_e, _ = _same_adj_and_mine(data, nodata)
+    denom = 4 * n_1 - min_e
+    if denom != 0:
+        g_i = G_11 / denom
+        if g_i >= p_i or p_i >= 0.5:
+            if (1.0 - p_i) != 0:
+                result["CLUMPY"] = float((g_i - p_i) / (1.0 - p_i))
         else:
-            dem_modified = np.where((clipped_dem >= altitude_l) & (clipped_dem <= altitude_u),
-                                    clipped_dem, dem_nodata)
-        dem_modified = dem_modified.astype(dem_meta_clipped['dtype'])
+            if p_i != 0:
+                result["CLUMPY"] = float((g_i - p_i) / (-p_i))
 
-        # Step 2: Build allowed land cover code set based on classification fields
-        allowed_codes = set()
-        if row_dict.get('Artificial_Terrestrial') == '1':
-            allowed_codes.update([1, 6])
-        if row_dict.get('Desert') == '1':
-            allowed_codes.add(7)
-        if row_dict.get('Forest') == '1':
-            allowed_codes.add(2)
-        if row_dict.get('Grassland') == '1':
-            allowed_codes.add(4)
-        if row_dict.get('Rocky_areas') == '1':
-            allowed_codes.update([9, 200])
-        if row_dict.get('Savanna') == '1':
-            allowed_codes.add(100)
-        if row_dict.get('Shrubland') == '1':
-            allowed_codes.add(3)
-        if row_dict.get('Wetlands__inland_') == '1':
-            allowed_codes.update([5, 8])
+    # ---------- nLSI ----------
+    e_i = 4 * n_1 - G_11
+    rows, cols = data.shape
+    cells_boundary = rows * 2 + cols * 2
+    threshold = (0.5 * n_total + 0.5 * cells_boundary) / n_total
+    if p_i <= 0.5:
+        max_e = 4 * n_1
+    elif n_total % 2 == 0 and p_i <= threshold:
+        max_e = 3 * n_total - 2 * n_1
+    elif n_total % 2 != 0 and p_i <= threshold:
+        max_e = 3 * n_total - 2 * n_1 + 3
+    else:
+        max_e = e_i + 4 * (n_total - n_1)
+    nlsi_denom = max_e - min_e
+    if nlsi_denom != 0:
+        v = (e_i - min_e) / nlsi_denom
+        if np.isfinite(v):
+            result["nLSI"] = float(max(0.0, min(1.0, v)))
 
-        # If allowed codes is empty, skip this feature
-        if not allowed_codes:
-            error_msg = "Allowed land cover codes are empty"
-            print(f"[Process {os.getpid()}] Feature (id_no={feature_id}): {error_msg}")
-            return False, feature_id, error_msg
+    # ED excludes the window perimeter; nLSI above includes it.
+    # ---------- ED ----------
+    habitat = (data != nodata)
+    h_edges = int(np.sum(habitat[:, :-1] != habitat[:, 1:]))
+    v_edges = int(np.sum(habitat[:-1, :] != habitat[1:, :]))
+    result["ED"] = float((h_edges + v_edges) * PIXEL_SIZE / total_ha)
 
-        # If clipped DEM and land cover data have different shapes, resample land cover data to DEM grid
-        if dem_modified.shape != clipped_lc.shape:
-            resampled_lc = np.empty(dem_modified.shape, dtype=clipped_lc.dtype)
-            reproject(
-                source=clipped_lc,
-                destination=resampled_lc,
-                src_transform=lc_transform,
-                src_crs=lc_meta_clipped['crs'],
-                dst_transform=dem_meta_clipped['transform'],
-                dst_crs=dem_meta_clipped['crs'],
-                resampling=Resampling.nearest
-            )
-            clipped_lc = resampled_lc
+    # ---------- MESH / AREA_MN / PD ----------
+    areas = _patch_areas_ha(data, nodata)
+    if len(areas) > 0:
+        result["MESH"]    = float(np.sum(areas ** 2) / total_ha)
+        result["AREA_MN"] = float(np.mean(areas))
+        result["PD"]      = float(len(areas) / total_ha * 100)
 
-        # Step 3: Use clipped DEM to mask land cover data
-        lc_intermediate = np.where(dem_modified != dem_nodata, clipped_lc, lc_nodata)
-        lc_intermediate = lc_intermediate.astype(lc_meta_clipped['dtype'])
-
-        # Step 4: Further filter, keep only pixels corresponding to allowed codes, assign others as nodata
-        lc_final = np.where(np.isin(lc_intermediate, list(allowed_codes)), lc_intermediate, lc_nodata)
-        lc_final = lc_final.astype(lc_meta_clipped['dtype'])
-
-        # Step 5: Write processed land cover data to intermediate file, filename using id_no
-        intermediate_file = os.path.join(output_folder, f"{feature_id}_landcover.tif")
-        # Add compression settings for land cover file
-        lc_meta_compressed = lc_meta_clipped.copy()
-        lc_meta_compressed.update({
-            'compress': 'lzw',
-            'tiled': True,
-            'blockxsize': 512,
-            'blockysize': 512
-        })
-        with rasterio.open(intermediate_file, 'w', **lc_meta_compressed) as dst:
-            dst.write(lc_final, 1)
-
-        # Step 6: Use intermediate file to calculate indices, output four raster files, filename using id_no and index name
-        output_paths = [
-            os.path.join(output_folder, f"{feature_id}_PD.tif"),
-            os.path.join(output_folder, f"{feature_id}_ED.tif"),
-            os.path.join(output_folder, f"{feature_id}_AREA_MN.tif"),
-            os.path.join(output_folder, f"{feature_id}_MESH.tif")
-        ]
-        create_indices_raster(intermediate_file, output_paths, window_size=3000, pixel_size=300, lc_nodata=lc_nodata)
-
-        # Verify all output files were successfully created
-        if check_output_files_exist(feature_id, output_folder):
-            print(f"[Process {os.getpid()}] Feature (id_no={feature_id}) processing completed!")
-            return True, feature_id, "Processing successful"
-        else:
-            raise Exception("Some output files were not successfully created")
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"[Process {os.getpid()}] Error processing feature (id_no={feature_id}): {error_msg}")
-        # Clean up potentially incomplete files
-        clean_incomplete_files(feature_id, output_folder)
-        return False, feature_id, error_msg
+    return result
 
 
-# -------------------------------
-# Main processing function
-# -------------------------------
-def main():
-    print(f"Detected {cpu_count()} CPU cores, will use {MAX_WORKERS} processes for parallel processing")
-
-    # Read vector data (specified layer in GDB file)
-    gdf = gpd.read_file(gdb_file, layer=layer_name)
-    print(f"Read {len(gdf)} features in total.")
-
-    # Pre-obtain nodata values from DEM and land cover data
-    with rasterio.open(dem_path) as src:
-        dem_nodata = src.nodata
-        if dem_nodata is None:
-            dem_nodata = -9999
-
+# -------------------------------------------------------
+# -------------------------------------------------------
+def create_metric_rasters(landcover_path, out_paths, lc_nodata=0):
+    """Binarize one prepared input in memory and write six metric rasters."""
     with rasterio.open(landcover_path) as src:
-        lc_nodata = src.nodata
-        if lc_nodata is None:
-            lc_nodata = 0
+        if src.count != 1:
+            raise ValueError("Species habitat inputs must be single-band rasters.")
+        raster    = src.read(1)
+        nodata_val = src.nodata if src.nodata is not None else lc_nodata
+        _validate_nodata(nodata_val)
+        transform  = src.transform
+        profile    = src.profile.copy()
 
-    # Get processing statistics
-    stats = get_processing_statistics(gdf, output_folder)
+    rows, cols = raster.shape
+    nw = int(WINDOW_SIZE / PIXEL_SIZE)
+    out_rows = (rows + nw - 1) // nw
+    out_cols = (cols + nw - 1) // nw
 
-    print(f"=== Processing Status ===")
-    print(f"Total features: {stats['total']}")
-    print(f"Completed: {stats['completed']}")
-    print(f"Pending: {stats['pending']}")
-    print(f"Completion rate: {stats['completed'] / stats['total'] * 100:.1f}%")
-    print(f"========================")
+    binary = np.where(raster != nodata_val, 1, nodata_val).astype(raster.dtype)
 
-    if stats['pending'] == 0:
-        print("All features have been processed!")
-        return
+    arrays = {m: np.full((out_rows, out_cols), FILL, dtype=np.float32) for m in METRICS}
 
-    # Prepare task list for pending processing
-    tasks = []
-    for idx, feature_id in stats['pending_features']:
-        row = gdf.iloc[idx]
-        # Convert GeoDataFrame row to dictionary, including geometry information
-        row_dict = row.to_dict()
-        row_dict['geometry'] = row.geometry.__geo_interface__
+    for i in range(0, rows, nw):
+        for j in range(0, cols, nw):
+            w = binary[i:i + nw, j:j + nw]
+            if w.size == 0:
+                continue
+            oi, oj = i // nw, j // nw
+            if int(np.sum(w != nodata_val)) < 1:
+                continue
+            res = calc_all(w, nodata_val)
+            for m, v in res.items():
+                if not np.isnan(v):
+                    arrays[m][oi, oj] = v
 
-        tasks.append((
-            row_dict, idx, len(gdf), dem_path, landcover_path,
-            output_folder, dem_nodata, lc_nodata
-        ))
+    out_profile = profile.copy()
+    out_profile.update({
+        'dtype': rasterio.float32,
+        'width': out_cols,
+        'height': out_rows,
+        'transform': transform * Affine.scale(nw, nw),
+        'compress': 'lzw',
+        'tiled': True,
+        'blockxsize': 512,
+        'blockysize': 512,
+        'nodata': FILL,
+        'count': 1,
+    })
 
-    # Parallel processing
-    print(f"Starting parallel processing of {len(tasks)} pending features...")
-    start_time = datetime.now()
+    for m, path in out_paths.items():
+        with rasterio.open(path, 'w', **out_profile) as dst:
+            dst.write(arrays[m], 1)
 
-    success_count = 0
+
+
+def _outputs_complete(paths):
+    """A completed species must have all six nonempty output files."""
+    return len(paths) == len(METRICS) and all(
+        os.path.isfile(path) and os.path.getsize(path) > 0 for path in paths
+    )
+
+
+def process_feature(args):
+    feature_id, lc_folder, out_folder, lc_nodata = args
+    landcover_path = os.path.join(lc_folder, f"{feature_id}_landcover.tif")
+    if not os.path.exists(landcover_path):
+        return feature_id, "no_landcover"
+    out_paths = {m: os.path.join(out_folder, f"{feature_id}_{m}.tif") for m in METRICS}
+    try:
+        create_metric_rasters(landcover_path, out_paths, lc_nodata)
+        ok = _outputs_complete(list(out_paths.values()))
+        return feature_id, "success" if ok else "empty_output"
+    except Exception as exc:
+        for path in out_paths.values():
+            if os.path.exists(path):
+                os.remove(path)
+        return feature_id, f"error: {exc}"
+
+
+def run_task(task_id, layer_name, lc_folders, out_prefix, year, lc_nodata):
+    """Run one GDB layer/year, rechecking files for previously completed IDs."""
+    lc_folder = lc_folders[year]
+    out_folder = os.path.join(BASE_OUT_DIR, f"{out_prefix}_{year}")
+    gdf = gpd.read_file(GDB_FILE, layer=layer_name)
+    if "id_no" not in gdf.columns or gdf["id_no"].isna().any():
+        raise ValueError(f"{layer_name} must contain a non-missing id_no for every species.")
+    feature_ids = list(dict.fromkeys(str(fid) for fid in gdf["id_no"]))
+    os.makedirs(out_folder, exist_ok=True)
+    progress_file = os.path.join(out_folder, f"progress_{task_id}_{year}.json")
+    progress = load_progress(progress_file)
+    completed = set(progress["completed"])
+    failed = set(progress["failed"])
+    todo = []
+    for feature_id in feature_ids:
+        paths = [os.path.join(out_folder, f"{feature_id}_{m}.tif") for m in METRICS]
+        if _outputs_complete(paths):
+            completed.add(feature_id)
+            failed.discard(feature_id)
+        else:
+            completed.discard(feature_id)
+            todo.append(feature_id)
+    progress["completed"] = sorted(completed)
+    progress["failed"] = sorted(failed)
+    save_progress(progress_file, progress)
+    print(f"Task {task_id}, year {year}: {len(feature_ids)} species, {len(todo)} pending")
+    print(f"Input: {lc_folder}")
+    print(f"Output: {out_folder}")
+    if not todo:
+        return 0
+    args_list = [(fid, lc_folder, out_folder, lc_nodata) for fid in todo]
     failure_count = 0
-    failed_features = []
-
-    # Use process pool for parallel processing
-    with Pool(processes=MAX_WORKERS) as pool:
-        results = pool.map(process_single_feature, tasks)
-
-        # Count results
-        for success, feature_id, message in results:
-            if success:
-                success_count += 1
+    with multiprocessing.Pool(processes=N_WORKERS) as pool:
+        for feature_id, status in pool.imap_unordered(process_feature, args_list):
+            if status == "success":
+                completed.add(feature_id)
+                failed.discard(feature_id)
             else:
+                completed.discard(feature_id)
+                failed.add(feature_id)
                 failure_count += 1
-                failed_features.append(feature_id)
+            print(f"  {feature_id}: {status}")
+            progress["completed"] = sorted(completed)
+            progress["failed"] = sorted(failed)
+            save_progress(progress_file, progress)
+    return failure_count
 
-    end_time = datetime.now()
-    processing_time = end_time - start_time
 
-    print(f"\n=== Parallel Processing Complete ===")
-    print(f"Processing time: {processing_time}")
-    print(f"Successfully processed: {success_count}")
-    print(f"Processing failed: {failure_count}")
-    if processing_time.total_seconds() > 0:
-        print(f"Average processing speed: {len(tasks) / processing_time.total_seconds():.2f} features/second")
-
-    # Final statistics
-    final_stats = get_processing_statistics(gdf, output_folder)
-    print(f"\n=== Final Statistics ===")
-    print(f"Total features: {final_stats['total']}")
-    print(f"Successfully processed: {final_stats['completed']}")
-    print(f"Pending: {final_stats['pending']}")
-    print(f"Completion rate: {final_stats['completed'] / final_stats['total'] * 100:.1f}%")
-    if failed_features:
-        print(f"Failed feature IDs: {failed_features[:10]}{'...' if len(failed_features) > 10 else ''}")
-    print("=======================")
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("task", nargs="?", choices=[task[0] for task in TASKS],
+                        help="Task to run; omit to run all configured animal groups.")
+    parser.add_argument("year", nargs="?", choices=YEARS,
+                        help="Year to run; omit to run both 1985 and 2020.")
+    args = parser.parse_args(argv)
+    failures = 0
+    for year in YEARS:
+        if args.year and year != args.year:
+            continue
+        # Optional reference supplies fallback NoData only when an input lacks it.
+        lc_nodata = 0
+        try:
+            with rasterio.open(LC_REF[year]) as src:
+                lc_nodata = src.nodata if src.nodata is not None else 0
+        except rasterio.errors.RasterioIOError:
+            print(f"Reference unavailable: {LC_REF[year]}; fallback NoData is 0.")
+        for task_id, layer_name, lc_folders, out_prefix in TASKS:
+            if args.task and task_id != args.task:
+                continue
+            failures += run_task(task_id, layer_name, lc_folders, out_prefix, year, lc_nodata)
+    print(f"Finished. Failed or missing species inputs: {failures}")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    main()
+    multiprocessing.freeze_support()
+    raise SystemExit(main())
