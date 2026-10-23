@@ -61,13 +61,15 @@ def draw_donuts(paths, output_dir):
         for ax, values, label in zip(axes.flat, percentages, labels):
             ax.pie(values, colors=colors, startangle=90, counterclock=False,
                    wedgeprops=dict(width=0.35, edgecolor="none"),
-                   autopct="%.2f%%" if show_text else None, pctdistance=1.17)
+                   autopct="%.2f%%" if show_text else None, pctdistance=1.17,
+                   textprops={"fontsize": 8})
             if show_text:
                 ax.text(0, 0, label, ha="center", va="center")
             ax.axis("equal")
         if show_text:
             fig.legend(["Increase", "No change", "Decrease"], loc="upper center", ncol=3, frameon=False)
-        fig.subplots_adjust(wspace=0.1, hspace=0.1)
+        fig.subplots_adjust(wspace=.4 if show_text else .1,
+                            hspace=.3 if show_text else .1, top=.88 if show_text else .95)
         save_figure(fig, output_dir, "figure2c_threshold_donuts_" + ("with_text" if show_text else "no_text"))
 
 
