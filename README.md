@@ -9,7 +9,7 @@ This repository provides four analytical components for studying habitat fragmen
 1. **Fragmentation Analysis** - Binarize prepared species habitat rasters and calculate six habitat metrics
 2. **GLMM Analysis (R)** - Estimate associations between fragmentation change and environmental and anthropogenic drivers with spatial-block random intercepts
 3. **PSM Analysis** - Evaluate protected area effectiveness using propensity score matching
-4. **Visualization Analysis** - Create comprehensive multi-species comparison visualizations
+4. **Visualization** - Plot the panels for Figures 1, 2, 4, 5 and 6 from prepared analysis outputs
 
 ## Repository Structure
 
@@ -25,7 +25,12 @@ This repository provides four analytical components for studying habitat fragmen
 │   ├── psm_protected_areas_analysis.py
 │   └── psm_data_preprocessor.py
 ├── visualization/
-│   └── visualization_analysis_suite.py
+│   ├── figure1_species_fragmentation.py
+│   ├── figure2_habitat_amount.py
+│   ├── figure4_glmm_coefficients.py
+│   ├── figure5_att_maps.py
+│   ├── figure5_latitude_profiles.py
+│   └── figure6_grouped_att.py
 ├── data/
 │   ├── sp_data.gdb
 │   ├── species_habitat/
@@ -34,7 +39,7 @@ This repository provides four analytical components for studying habitat fragmen
 │   ├── habitat_indices/
 │   ├── glm_analysis/
 │   ├── psm_analysis/
-│   ├── visualization_results/
+│   ├── visualization/
 │   └── boundaries/
 └── README.md
 ```
@@ -76,12 +81,13 @@ data/
 ├── species_analysis/
 │   ├── species_distribution_data.gdb
 │   └── species_fragmentation_change_1985_2020.tif
-├── analysis_results/
-│   └── tables/
+├── visualization/
+│   └── figure1/
 │       ├── AMPH_changes.csv
 │       ├── BIRD_changes.csv
-│       ├── MAMM_changes.csv
-│       └── REPT_changes.csv
+│       ├── MA_changes.csv
+│       ├── RE_changes.csv
+│       └── all_species_mean_changes.csv
 ├── land_cover/
 │   ├── land_cover_1985_300m.tif
 │   └── land_cover_2020_300m.tif
@@ -287,81 +293,26 @@ python psm/psm_protected_areas_analysis.py
 - `protected_areas_att_spatial.tif` - Spatial ATT distribution
 - `psm_analysis_summary.txt` - Comprehensive results
 
-## 4. Visualization Analysis
+## 4. Visualization
 
-Create comprehensive multi-species habitat fragmentation comparison visualizations and statistical analysis.
+Scripts in `visualization/` export the plotted panels for Figures 1, 2, 4, 5 and 6. They read prepared analysis outputs; input datasets are supplied separately. Edit paths through the command-line options (`python visualization/<script>.py --help`). Figure panels can be arranged into the final manuscript layout after export.
 
-### Scripts Overview
+| Figure | Script | Reads |
+| --- | --- | --- |
+| 1b–d | `figure1_species_fragmentation.py` | Four `{AMPH,BIRD,MA,RE}_changes.csv` files (columns `增加比例`, `下降比例`, `不变比例`) and `all_species_mean_changes.csv` (`group`, `species_id`, `status`, `mean_1985_common`, `mean_2020_common`, `mean_change`). |
+| 2c–e | `figure2_habitat_amount.py` | Four `ALL_composite_diff*.tif` rasters for the 0%, 1%, 5% and 10% thresholds; `hab_gam_pixels.csv` (`amount`, `loss_rate`, `frag_diff`); `hab_metric_pixels.csv` (`amount`, `mix_diff`, `CLUMPY_diff`, `nLSI_diff`, `ED_diff`, `PD_diff`). Use `--panel donuts`, `gam` or `spearman` to plot one component. |
+| 4 | `figure4_glmm_coefficients.py` | `GLMM_ALL_COMPOSITE_results.txt` from the GLMM analysis, containing regional coefficients and 95% confidence intervals. |
+| 5 maps | `figure5_att_maps.py` | `ALL/{PA,KBA}/ALL_{PA,KBA}_composite_att_spatial.gpkg` (`mean_ATT` and geometry), a world boundary layer, and China polygon/line layers. |
+| 5 latitude profiles | `figure5_latitude_profiles.py` | The same PA/KBA GeoPackages, used to calculate latitude-band ATT medians and bootstrap 95% intervals. |
+| 6 | `figure6_grouped_att.py` | `{AMPH,BIRD,MA,RE}/{PA,KBA}/{taxon}_{kind}_composite_att_spatial.gpkg`, `iso3_continent_mapping.json` and `kba_climate_membership.csv` (`sitrecid`, `Cli_Zone`). PA attributes: `mean_ATT`, `WDPA_PI`, `AREA_KM`, `ISO3`, `IUCN_CA`; KBA attributes: `mean_ATT`, `sitrecid`, `gis_area_k`, `iso3`. |
 
-#### `multi_species_visualization_suite.py`
-- **Purpose**: Generate stacked bar chart visualizations for habitat fragmentation changes across multiple species
-- **Input**: Species-specific CSV files with fragmentation change data
-- **Output**: Horizontal stacked bar charts and statistical summaries
-- **Key Features**: Multi-species comparison, statistical validation, customizable sampling
+For Figure 2, `amount` is the 1985 habitat proportion, `loss_rate = (habitat_1985 - habitat_2020) / habitat_1985` (positive means loss), and fragmentation differences are 2020 minus 1985. The correlation panel uses **CLUMPY, nLSI, ED and PD** and plots absolute Spearman correlations with MIX change.
 
-### Core Functions
+Default figure exports go to `D:/hzl/code/outputs/figures/figureN/`; set `--output-dir` to use another location. For example:
 
-#### `create_multi_species_habitat_fragmentation_stacked()`
-- **Purpose**: Create horizontal stacked bar charts comparing habitat fragmentation changes across species
-- **Input**: CSV files with `Species_ID`, `Increase_Ratio`, `Decrease_Ratio`, `Unchanged_Ratio` columns
-- **Output**: Horizontal stacked bar visualization showing fragmentation patterns
-- **Key Features**:
-  - Color-coded categories (Red: Increase, Blue: Decrease, Orange: Unchanged)
-  - Reversed species order for optimal readability
-  - Statistical validation and data cleaning
-  - Professional styling with publication-ready output
-  - SVG format for high-quality scientific graphics
-
-### Usage Example
 ```bash
-# Run habitat fragmentation stacked analysis
-python visualization/fragmentation_stacked_analysis.py
+python visualization/figure4_glmm_coefficients.py --input D:/hzl/code/outputs/GLMM_ALL_COMPOSITE/GLMM_ALL_COMPOSITE_results.txt
 ```
-
-### Advanced Configuration
-```python
-# Example species data dictionary
-species_csv_files = {
-    "AMPH": "data/analysis_results/tables/AMPH_changes.csv",
-    "BIRD": "data/analysis_results/tables/BIRD_changes.csv",
-    "MAMM": "data/analysis_results/tables/MA_changes.csv",
-    "REPT": "data/analysis_results/tables/RE_changes.csv"
-}
-
-# Execute with custom parameters
-create_multi_species_habitat_fragmentation_stacked(
-    species_csv_files,
-    output_path="data/visualization_results/multi_species_fragmentation.svg",
-    sample_size=10000  # Optional sampling for large datasets
-)
-```
-
-### Input Data Requirements
-- CSV files with required columns: `Species_ID`, `Increase_Ratio`, `Decrease_Ratio`, `Unchanged_Ratio`
-- Ratio values should be numeric and represent proportions (typically between 0 and 1)
-- Species identifier consistency across datasets
-- Proper null value handling and data validation
-
-### Key Features
-- **Multi-species comparison**: Simultaneous visualization of fragmentation patterns across taxonomic groups
-- **Publication quality**: SVG output format for high-resolution scientific graphics
-- **Statistical validation**: Comprehensive data cleaning and quality control processes
-- **Professional styling**: Clean layout with Arial font and scientific color schemes
-- **Flexible sampling**: Configurable random sampling for large datasets
-- **Cross-species analysis**: Statistical comparisons and summary calculations
-
-### Statistical Analysis Features
-- **Data validation**: Automatic null value detection and removal
-- **Sample size reporting**: Tracks data availability and processing statistics per species
-- **Cross-species comparison**: Mean, standard deviation calculations across all species
-- **Quality control**: Validates required fields and data completeness
-- **Comprehensive reporting**: Detailed console output with processing information
-
-### Output Files
-- `multi_species_habitat_fragmentation_stacked.svg` - Main horizontal stacked bar chart
-- Console output with detailed statistical summaries for each species
-- Cross-species comparison statistics (means, standard deviations)
-- Processing information and data quality reports
 
 ## Performance Optimization
 
