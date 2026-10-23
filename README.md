@@ -19,7 +19,7 @@ This repository provides four analytical components for studying habitat fragmen
 │   ├── fragmentation_indices_calculator.py
 │   ├── global_mix_aggregator.py
 │   └── species_richness_calculator.py
-├── glm/
+├── GLMM/
 │   └── glmm_fragmentation_analysis.R
 ├── psm/
 │   ├── psm_protected_areas_analysis.py
@@ -197,7 +197,7 @@ Provide `ALL_composite_diff_all.tif` in `data/glm_analysis/`, or configure anoth
 
 ## 2. GLMM Analysis (R)
 
-Estimate associations between composite habitat fragmentation change and six environmental and anthropogenic predictors. The R script `glm/glmm_fragmentation_analysis.R` fits a spatial-block Gaussian generalized linear mixed model using `glmmTMB`.
+Estimate associations between composite habitat fragmentation change and six environmental and anthropogenic predictors. The R script `GLMM/glmm_fragmentation_analysis.R` fits a spatial-block Gaussian generalized linear mixed model using `glmmTMB`.
 
 ### Inputs and Configuration
 
@@ -220,7 +220,7 @@ All predictor rasters must share a CRS and grid. The response raster must use th
 ### Usage Example
 
 ```bash
-Rscript glm/glmm_fragmentation_analysis.R
+Rscript GLMM/glmm_fragmentation_analysis.R
 ```
 
 The default output directory is `D:/hzl/code/outputs/GLMM_ALL_COMPOSITE`. Change the `folder` field in `y_configs` to use another location.
